@@ -7,7 +7,9 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::str;
+use std::time::Duration;
 use tokio::net::UdpSocket;
+use tokio::time::timeout;
 
 pub struct Client {
     socket: UdpSocket,
@@ -296,7 +298,13 @@ impl Client {
             Err(err) => return Err(ClientError::SendError(err.to_string())),
         };
         let mut data = vec![0u8; self.max_datagram_size];
-        let len = match self.socket.recv(&mut data).await {
+        let recv = match timeout(Duration::from_secs(3), self.socket.recv(&mut data)).await {
+            Err(_) => return Err(ClientError::RecvError(
+                "Failed to receive an response within 3 secs".to_string()
+            )),
+            Ok(res) => res,
+        };
+        let len = match recv {
             Ok(len) => len,
             Err(err) => return Err(ClientError::RecvError(err.to_string())),
         };
