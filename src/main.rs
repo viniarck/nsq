@@ -19,6 +19,14 @@ struct Cli {
     server: String,
 }
 
+fn show_answers(answers: &Vec<QueryAnswer>, server: &String){
+    println!("Server: {:?}", server);
+    println!("Answers:");
+    for answer in answers {
+        println!("{:?}", answer);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ClientError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("warn"))
@@ -80,6 +88,16 @@ async fn main() -> Result<(), ClientError> {
         }));
     }
     let joined = join_all(tasks).await;
-    println!("Joined {:?}", joined);
+    let mut answers: Vec<QueryAnswer> = Vec::new();
+    for result in joined {
+        match result {
+            Ok(r) => match r {
+                Ok(res) => answers.extend(res),
+                Err(err) => return Err(err)
+            }
+            Err(err) => return Err(ClientError::GenericError(err.to_string()))
+        }
+    }
+    show_answers(&answers, &server);
     Ok(())
 }

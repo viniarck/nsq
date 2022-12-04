@@ -72,6 +72,7 @@ enum ClassType {
     IN,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct QueryAnswer {
     host: String,
@@ -233,15 +234,6 @@ impl DNSMessage {
         self.flags[0] & 0x80 == 0x80
     }
 
-    fn is_query(&self) -> bool {
-        self.flags[0] & 0x80 == 0x00
-    }
-
-    fn op_code(&self) -> u8 {
-        // (self.flags[0] & 0x80) ;
-        0
-    }
-
     fn rd_code(&self) -> Result<(), ClientError> {
         match self.flags[1] & 0x0f {
             0 => Ok(()),
@@ -312,6 +304,11 @@ impl Client {
         let msg_decoded = match msg.decode(&data, len) {
             Ok(decoded) => decoded,
             Err(err) => return Err(ClientError::DecodeError(err.to_string())),
+        };
+        if !msg_decoded.is_answer() {
+            return Err(ClientError::DecodeError(
+                "Decoded message flag value isn't an answer".to_string(),
+            ));
         };
         let encode_size = DNSMessage::header_size();
         let rest = &data[encode_size..len];
