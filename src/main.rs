@@ -66,8 +66,10 @@ async fn main() -> Result<(), ClientError> {
 
     for host in cli.hosts {
         let h = host.clone();
+        let server = server.clone();
+        let srv = server.clone();
         tasks.push(tokio::spawn(async move {
-            let client = match Client::new("192.168.15.1:53".to_string()).await {
+            let client = match Client::new(server).await {
                 Ok(client) => client,
                 Err(err) => return Err(err),
             };
@@ -77,7 +79,7 @@ async fn main() -> Result<(), ClientError> {
             }
         }));
         tasks.push(tokio::spawn(async move {
-            let client = match Client::new("192.168.15.1:53".to_string()).await {
+            let client = match Client::new(srv).await {
                 Ok(client) => client,
                 Err(err) => return Err(err),
             };
