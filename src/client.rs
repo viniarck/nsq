@@ -1,10 +1,13 @@
 use bincode::Options;
 use log;
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddr;
-use tokio::net::UdpSocket;
 use std::str;
+use tokio::net::UdpSocket;
 
 pub struct Client {
     socket: UdpSocket,
@@ -20,7 +23,7 @@ struct DNSMessage {
     authority_rrs: [u8; 2],
     additional_rrs: [u8; 2],
     queries: Vec<u8>,
-    responses: Vec<u8>,
+    answers: Vec<u8>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -39,6 +42,8 @@ pub enum ClientError {
     EncodeError(String),
     #[error("DecodeError")]
     DecodeError(String),
+    #[error("DecodeIdError")]
+    DecodeIdError(String),
 
     #[error("DNS message RDCode format error")]
     RDCodeFormatError,
@@ -52,13 +57,25 @@ pub enum ClientError {
     RDCodeRefused,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum QueryType {
     A,
     AAAA,
+    SOA,
+    CNAME,
 }
 
+#[derive(Debug)]
 enum ClassType {
     IN,
+}
+
+#[derive(Debug)]
+pub struct QueryAnswer {
+    host: String,
+    address: String,
+    query_type: QueryType,
+    class_type: ClassType,
 }
 
 impl DNSMessage {
@@ -68,7 +85,8 @@ impl DNSMessage {
         12
     }
 
-    fn new(id: u16, queries: Vec<u8>) -> DNSMessage {
+    fn new(queries: Vec<u8>) -> DNSMessage {
+        let id: u16 = random();
         DNSMessage {
             id: [(id >> 8) as u8, (id & 0xff) as u8],
             flags: [1, 0],
@@ -77,7 +95,7 @@ impl DNSMessage {
             authority_rrs: [0, 0],
             additional_rrs: [0, 0],
             queries: queries,
-            responses: Vec::new(),
+            answers: Vec::new(),
         }
     }
 
@@ -96,11 +114,35 @@ impl DNSMessage {
         match query_type {
             QueryType::A => vec![0, 1],
             QueryType::AAAA => vec![0, 0x1c],
+            _ => vec![],
+        }
+    }
+
+    fn decode_query_type(values: &[u8]) -> Result<QueryType, ClientError> {
+        match values {
+            [0, 1] => Ok(QueryType::A),
+            [0, 0x1c] => Ok(QueryType::AAAA),
+            [0, 5] => Ok(QueryType::CNAME),
+            [0, 6] => Ok(QueryType::SOA),
+            _ => Err(ClientError::DecodeError(std::format!(
+                "Failed to decode query type {:x?}",
+                &values
+            ))),
         }
     }
 
     fn encode_class_type() -> Vec<u8> {
         vec![0, 1] // IN
+    }
+
+    fn decode_class_type(values: &[u8]) -> Result<ClassType, ClientError> {
+        match values {
+            [0, 1] => Ok(ClassType::IN),
+            _ => Err(ClientError::DecodeError(std::format!(
+                "Failed to decode class type {:x?}",
+                &values
+            ))),
+        }
     }
 
     fn encode_host(host: &String, query_type: &QueryType) -> Vec<u8> {
@@ -127,6 +169,62 @@ impl DNSMessage {
             .with_varint_encoding();
         let msg: DNSMessage = bincode_opts.deserialize(&data[..rcvd_len])?;
         Ok(msg)
+    }
+
+    fn decode_query_answers(
+        &self,
+        host: String,
+        queries_len: usize,
+        rest: &[u8],
+    ) -> Result<Vec<QueryAnswer>, ClientError> {
+        let rest_len = rest.len();
+        let mut answers: Vec<QueryAnswer> = Vec::new();
+        if rest_len < queries_len {
+            return Ok(answers);
+        }
+        let resp = &rest[queries_len..rest_len];
+        log::debug!("Decoding query answers: {:x?}", &resp);
+        let mut i: usize = 0;
+        while i + 12 < resp.len() {
+            if resp[i] != 0xc0 {
+                return Err(ClientError::DecodeError(std::format!(
+                    "Expected 0xc0 on decoded response, found {:x?} instead",
+                    &resp[i]
+                )));
+            }
+            let query_type = DNSMessage::decode_query_type(&resp[i + 2..i + 4])?;
+            let class_type = DNSMessage::decode_class_type(&resp[i + 4..i + 6])?;
+            let _ttl = &resp[i + 6..i + 10];
+            let data_len: u16 = ((resp[i + 10] as u16) << 8) | resp[i + 11] as u16;
+            if !(query_type == QueryType::A || query_type == QueryType::AAAA) {
+                i = i + 12 + (data_len as usize);
+                continue;
+            }
+            let answer = QueryAnswer {
+                host: host.clone(),
+                address: if query_type == QueryType::A {
+                    Ipv4Addr::new(resp[i + 12], resp[i + 13], resp[i + 14], resp[i + 15])
+                        .to_string()
+                } else {
+                    Ipv6Addr::new(
+                        ((resp[i + 12] as u16) << 8) | resp[i + 13] as u16,
+                        ((resp[i + 14] as u16) << 8) | resp[i + 15] as u16,
+                        ((resp[i + 16] as u16) << 8) | resp[i + 17] as u16,
+                        ((resp[i + 18] as u16) << 8) | resp[i + 19] as u16,
+                        ((resp[i + 20] as u16) << 8) | resp[i + 21] as u16,
+                        ((resp[i + 22] as u16) << 8) | resp[i + 23] as u16,
+                        ((resp[i + 24] as u16) << 8) | resp[i + 25] as u16,
+                        ((resp[i + 26] as u16) << 8) | resp[i + 27] as u16,
+                    )
+                    .to_string()
+                },
+                query_type: query_type,
+                class_type: class_type,
+            };
+            answers.push(answer);
+            i = i + 12 + (data_len as usize);
+        }
+        Ok(answers)
     }
 
     fn is_answer(&self) -> bool {
@@ -186,31 +284,47 @@ impl Client {
         })
     }
 
-    pub async fn query(&self, host: String, query_type: QueryType) -> Result<String, ClientError> {
+    pub async fn query(
+        &self,
+        host: String,
+        query_type: QueryType,
+    ) -> Result<Vec<QueryAnswer>, ClientError> {
         let queries = DNSMessage::encode_host(&host, &query_type);
-        let msg = &DNSMessage::new(0x0033, queries);
+        let queries_len = queries.len();
+        let msg = &DNSMessage::new(queries);
         log::debug!("Query {:x?}", msg);
         let msg_enc = match msg.encode() {
             Ok(encoded) => encoded,
-            Err(err) => return Err(ClientError::EncodeError(err.to_string()))
+            Err(err) => return Err(ClientError::EncodeError(err.to_string())),
         };
         match self.socket.send(&msg_enc).await {
             Ok(_) => (),
-            Err(err) => return Err(ClientError::SendError(err.to_string()))
+            Err(err) => return Err(ClientError::SendError(err.to_string())),
         };
         let mut data = vec![0u8; self.max_datagram_size];
         let len = match self.socket.recv(&mut data).await {
             Ok(len) => len,
-            Err(err) => return Err(ClientError::RecvError(err.to_string()))
+            Err(err) => return Err(ClientError::RecvError(err.to_string())),
         };
         log::debug!("Query encoded {:x?}, received {:?} bytes", msg_enc, len);
-        let msg = match msg.decode(&data, len) {
+        let msg_decoded = match msg.decode(&data, len) {
             Ok(decoded) => decoded,
-            Err(err) => return Err(ClientError::DecodeError(err.to_string()))
+            Err(err) => return Err(ClientError::DecodeError(err.to_string())),
         };
-        log::debug!("Response {:?}", &msg);
-        match msg.rd_code() {
-            Ok(()) => Ok(String::from_utf8_lossy(&data[..len]).into()),
+        let encode_size = DNSMessage::header_size();
+        let rest = &data[encode_size..len];
+        log::debug!("Rest {:x?}", rest);
+        if msg.id != msg_decoded.id {
+            let err_msg: String = std::format!(
+                "Sent Query ID: {:?}, but received Response ID: {:?}",
+                msg.id,
+                msg_decoded.id
+            );
+            return Err(ClientError::DecodeIdError(err_msg));
+        }
+        log::debug!("Response {:x?}", &msg_decoded);
+        match msg_decoded.rd_code() {
+            Ok(()) => msg_decoded.decode_query_answers(host, queries_len, rest),
             Err(err) => Err(err),
         }
     }

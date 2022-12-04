@@ -1,7 +1,7 @@
 pub mod client;
 use chrono::Local;
 use clap::Parser;
-use client::{Client, ClientError, QueryType};
+use client::{Client, ClientError, QueryType, QueryAnswer};
 use env_logger::Env;
 use log;
 use std::io::Write;
@@ -31,7 +31,7 @@ async fn main() -> Result<(), ClientError> {
 
     let cli = Cli::parse();
     log::debug!("It will resolve {:?}", cli.hosts);
-    let mut tasks: Vec<JoinHandle<Result<String, ClientError>>> =
+    let mut tasks: Vec<JoinHandle<Result<Vec<QueryAnswer>, ClientError>>> =
         Vec::with_capacity(cli.hosts.len());
     for host in cli.hosts {
         let h = host.clone();
