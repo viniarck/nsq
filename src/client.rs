@@ -44,6 +44,8 @@ pub enum ClientError {
     DecodeError(String),
     #[error("DecodeIdError")]
     DecodeIdError(String),
+    #[error("GenericError")]
+    GenericError(String),
 
     #[error("DNS message RDCode format error")]
     RDCodeFormatError,
